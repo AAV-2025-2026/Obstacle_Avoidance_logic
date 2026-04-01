@@ -19,7 +19,8 @@
 #include <string>
  
 using namespace std::chrono_literals;
- 
+
+// Vehicle drive states
 const std::string CLEAR      = "CLEAR";
 const std::string CAUTION    = "CAUTION";
 const std::string BRAKING    = "BRAKING";
@@ -31,18 +32,21 @@ struct ObstaclePoint {
 };
  
 struct Region {
-    float a_min, a_max;
+    float a_min, a_max; // Angular bounds in degrees
 };
  
 class ObstacleAvoidance : public rclcpp::Node {
 public:
     ObstacleAvoidance() : Node("obstacle_avoidance") {
- 
+
+		//  geometry and motion params
         this->declare_parameter("vehicle_width",    1.4);
         this->declare_parameter("vehicle_length",   2.0);
         this->declare_parameter("max_deceleration", 3.0);
         this->declare_parameter("reaction_time",    0.5);
         this->declare_parameter("wheelbase",        1.3);
+
+		// reverse params
         this->declare_parameter("reverse_speed",      0.1);
         this->declare_parameter("reverse_duration",   1.5);
         this->declare_parameter("reverse_clear_dist", 1.0);
@@ -55,12 +59,15 @@ public:
         reverse_speed_      = this->get_parameter("reverse_speed").as_double();
         reverse_duration_   = this->get_parameter("reverse_duration").as_double();
         reverse_clear_dist_ = this->get_parameter("reverse_clear_dist").as_double();
- 
+
+		// Speed thresholds
         min_safe_distance_  = 0.55;
         comfort_factor_     = 1.5;
         normal_speed_       = 0.3;
         slow_speed_         = 0.15;
         crawl_speed_        = 0.08;
+
+		// Steering limits
         max_steering_angle_ = 0.52;
         normal_steering_    = 0.35;
         gentle_steering_    = 0.17;
@@ -72,7 +79,8 @@ public:
         reverse_start_time_    = this->now();
         last_reverse_time_     = this->now();
         recover_steer_dir_     = 0.0f;
- 
+
+		// angular regions around the vehicle
         regions_["front_center"] = {-10.0f,  10.0f};
         regions_["front_left"]   = { 10.0f,  30.0f};
         regions_["front_right"]  = {-30.0f, -10.0f};
@@ -82,7 +90,8 @@ public:
  
         for (auto& kv : regions_)
             region_min_[kv.first] = 999.9f;
- 
+
+		// Local costmap centered on robot
         map_width_    = 100;
         map_height_   = 100;
         resolution_   = 0.1f;
@@ -173,7 +182,7 @@ private:
                 }
             }
  
-            // Update costmap
+            // Update costmap and inflate
             int cell_x = static_cast<int>(robot_cell_x_ + (x / resolution_));
             int cell_y = static_cast<int>(robot_cell_y_ + (y / resolution_));
             if (cell_x >= 0 && cell_x < map_width_ && cell_y >= 0 && cell_y < map_height_) {
@@ -247,7 +256,8 @@ private:
         bool corridor_safe = checkSafetyCorridor();
         makeVDecision(corridor_safe);
     }
- 
+
+//obstacle is confirmed only if seen in 2 of the last frames
     void updateConfirmedObstacles() {
         if (static_cast<int>(obstacle_history_.size()) < 3) return;
         confirmed_obstacles_.clear();
@@ -279,7 +289,8 @@ private:
             return angle > 150.0f || angle < -150.0f;
         return a_min <= angle && angle <= a_max;
     }
- 
+
+ // Inflate obstacle cells by vehicle margins
     void inflateObstacleDynamic(int cx, int cy) {
         int vehicle_cells    = static_cast<int>((vehicle_width_ / 2.0) / resolution_);
         int inflation_radius = std::max(3, vehicle_cells + 2);
@@ -384,6 +395,8 @@ private:
         float rear        = getRegionDistance("rear");
  
         bool rear_clear = checkRearCorridor();
+
+		 // obstacle in front within stop distance and cant reverse
         bool emergency  = (front < static_cast<float>(min_safe_distance_)) && !rear_clear;
  
         if (emergency) {
@@ -401,7 +414,7 @@ private:
  
         if (drive_state_ == REVERSING) {
             double elapsed = (now - reverse_start_time_).seconds();
-            if (!rear_clear) {
+            if (!rear_clear) {    // rear is  blocked mid reverse, stop immediately
                 drive_state_  = BRAKING;
                 desired_speed = 0.0f;
                 desired_steer = 0.0f;
@@ -410,14 +423,14 @@ private:
                 desired_speed = static_cast<float>(-reverse_speed_);
                 desired_steer = recover_steer_dir_ * static_cast<float>(gentle_steering_);
                 status        = "REVERSING";
-            } else {
+            } else { // reverse complete, transition to frecovery
                 drive_state_  = RECOVERING;
                 desired_speed = 0.0f;
                 desired_steer = 0.0f;
                 status        = "transition to RECOVERING";
             }
  
-        } else if (drive_state_ == RECOVERING) {
+        } else if (drive_state_ == RECOVERING) { // path clear, resume normal driving
             if (front > static_cast<float>(safe_dist)) {
                 drive_state_  = CLEAR;
                 desired_speed = static_cast<float>(normal_speed_);
@@ -432,6 +445,7 @@ private:
         } else {
             if (front <= static_cast<float>(safe_dist) && rear_clear 
             && (now - last_reverse_time_).seconds() > 2.0){
+				//  reverse steering direction toward the side with more space
                 if (left > right + 0.3f)
                     recover_steer_dir_ = 1.0f;
                 else if (right > left + 0.3f)
@@ -518,19 +532,21 @@ private:
         costmap_pub_->publish(msg);
     }
  
-    
+    // Subscriptions
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr    scan_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr  cloud_sub_; //  for rosbag
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr        odom_sub_;
- 
+
+	// Publishers
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr cmd_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr                        emergency_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr               costmap_pub_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr                  twist_pub_;
- 
+
     rclcpp::TimerBase::SharedPtr costmap_timer_;
     rclcpp::TimerBase::SharedPtr safety_timer_;
- 
+
+    // Vehicle state
     double current_velocity_;
     double current_steering_;
     bool   emergency_stop_active_;
@@ -539,7 +555,8 @@ private:
     rclcpp::Time reverse_start_time_;
     rclcpp::Time last_reverse_time_;
     float        recover_steer_dir_;
- 
+
+    // Parameters
     double vehicle_width_;
     double vehicle_length_;
     double max_decel_;
@@ -556,7 +573,8 @@ private:
     double max_steering_angle_;
     double normal_steering_;
     double gentle_steering_;
- 
+
+    // obstacle tracking
     std::deque<std::vector<ObstaclePoint>> obstacle_history_;
     std::map<std::string, float>           confirmed_obstacles_;
     std::map<std::string, Region>          regions_;
